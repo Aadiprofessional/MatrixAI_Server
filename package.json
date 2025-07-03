@@ -1,0 +1,21 @@
+{
+  "name": "matrixai-server-cloudflare",
+  "version": "1.0.0",
+  "description": "MatrixAI Server for Cloudflare Pages",
+  "main": "functions/api/[[route]].js",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "deploy": "wrangler pages deploy",
+    "build": "echo 'No build step needed for Pages Functions'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "hono": "^3.12.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.22.0"
+  },
+  "keywords": ["cloudflare", "pages", "serverless", "audio", "api"],
+  "author": "",
+  "license": "MIT"
+} 
