@@ -2,16 +2,11 @@ name = "matrixai-server"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Pages configuration
+pages_build_output_dir = "."
+
 [env.production.vars]
 ENVIRONMENT = "production"
 
 [env.preview.vars]
-ENVIRONMENT = "preview"
-
-[[env.production.kv_namespaces]]
-binding = "CACHE"
-id = "your-kv-namespace-id"
-
-[[env.preview.kv_namespaces]]
-binding = "CACHE"
-preview_id = "your-kv-preview-namespace-id" 
+ENVIRONMENT = "preview" 

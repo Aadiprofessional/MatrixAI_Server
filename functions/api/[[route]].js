@@ -209,9 +209,5 @@ app.get('/health', (c) => {
   return c.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Handle the Pages Functions export
-export default {
-  async fetch(request, env, ctx) {
-    return app.fetch(request, env, ctx);
-  }
-}; 
+// Handle all requests - this is the main export for Cloudflare Pages Functions
+export default app; 
