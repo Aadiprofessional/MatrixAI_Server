@@ -5,10 +5,6 @@ compatibility_flags = ["nodejs_compat"]
 # Pages configuration
 pages_build_output_dir = "."
 
-# Explicitly specify functions directory
-[build]
-command = "npm run build"
-
 [env.production.vars]
 ENVIRONMENT = "production"
 
