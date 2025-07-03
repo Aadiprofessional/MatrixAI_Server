@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import audioRoutes from './routes/audioRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 const app = new Hono();
 
@@ -30,6 +31,7 @@ app.get('/api', (c) => {
     endpoints: {
       audio: '/api/audio/*',
       user: '/api/user/*',
+      admin: '/api/admin/*',
       health: '/health'
     },
     documentation: 'https://github.com/your-username/MatrixAI_Server'
@@ -39,13 +41,14 @@ app.get('/api', (c) => {
 // Register route modules
 app.route('/api/audio', audioRoutes);
 app.route('/api/user', userRoutes);
+app.route('/api/admin', adminRoutes);
 
 // 404 handler
 app.notFound((c) => {
   return c.json({ 
     error: 'Not Found',
     message: 'The requested endpoint does not exist',
-    availableEndpoints: ['/health', '/api', '/api/audio/*', '/api/user/*']
+    availableEndpoints: ['/health', '/api', '/api/audio/*', '/api/user/*', '/api/admin/*']
   }, 404);
 });
 
