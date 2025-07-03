@@ -1,25 +1,53 @@
 # MatrixAI Server - Cloudflare Pages
 
-A serverless audio management API built for Cloudflare Pages Functions with Supabase integration.
+A **modular serverless** audio management API built for Cloudflare Pages Functions with Supabase integration.
 
-## Features
+## 🚀 Features
 
-- **Serverless Architecture**: Built on Cloudflare Pages Functions
+- **Modular Architecture**: Clean separation of concerns with dedicated route modules
+- **Serverless**: Built on Cloudflare Pages Functions for automatic scaling
 - **Audio Management**: Complete CRUD operations for audio files
 - **Supabase Integration**: Database and storage management
 - **CORS Support**: Cross-origin resource sharing enabled
+- **Error Handling**: Centralized error handling with consistent responses
+- **Input Validation**: Comprehensive validation utilities
 - **GitHub Integration**: Automatic deployment via GitHub Actions
 
-## API Endpoints
+## 📁 Project Structure
 
-- `POST /api/getAudioFile` - Get audio file details by UID and audio ID
-- `GET /api/getAudio/:uid` - Get all audio files for a user
-- `POST /api/removeAudio` - Remove audio file and metadata
-- `POST /api/editAudio` - Edit audio file name
-- `POST /api/sendXmlGraph` - Save XML data for audio
-- `GET /api/health` - Health check endpoint
+```
+MatrixAI_Server/
+├── functions/api/[[route]].js    # Cloudflare Pages entry point
+├── src/
+│   ├── app.js                    # Main application setup
+│   ├── config/database.js        # Database configuration
+│   ├── middleware/errorHandler.js # Error handling
+│   ├── routes/
+│   │   ├── audioRoutes.js        # Audio endpoints
+│   │   └── userRoutes.js         # User endpoints (template)
+│   └── utils/validation.js       # Input validation
+├── .github/workflows/deploy.yml  # CI/CD pipeline
+└── ARCHITECTURE.md               # Detailed architecture docs
+```
 
-## Setup Instructions
+## 🔗 API Endpoints
+
+### Audio Management (`/api/audio/`)
+- `POST /api/audio/getAudioFile` - Get audio file details by UID and audio ID
+- `GET /api/audio/getAudio/:uid` - Get all audio files for a user
+- `POST /api/audio/removeAudio` - Remove audio file and metadata
+- `POST /api/audio/editAudio` - Edit audio file name
+- `POST /api/audio/sendXmlGraph` - Save XML data for audio
+
+### User Management (`/api/user/`) - Template Ready
+- `GET /api/user/profile/:uid` - Get user profile
+- `POST /api/user/profile/update` - Update user profile
+
+### System Endpoints
+- `GET /health` - Health check with service info
+- `GET /api` - API information and available endpoints
+
+## 🛠️ Setup Instructions
 
 ### 1. Prerequisites
 
@@ -57,6 +85,8 @@ A serverless audio management API built for Cloudflare Pages Functions with Supa
    ```bash
    npm run dev
    ```
+   
+   Your API will be available at `http://localhost:8787`
 
 ### 3. Cloudflare Setup
 
@@ -98,9 +128,63 @@ A serverless audio management API built for Cloudflare Pages Functions with Supa
    - Push to main branch or create a pull request
    - GitHub Actions will automatically deploy to Cloudflare Pages
 
-### 5. Database Setup (Supabase)
+## 🧪 Testing Your API
 
-Ensure your Supabase database has the `audio_metadata` table with the following structure:
+### Health Check
+```bash
+curl https://your-domain.pages.dev/health
+```
+
+### API Information
+```bash
+curl https://your-domain.pages.dev/api
+```
+
+### Get Audio Files
+```bash
+curl https://your-domain.pages.dev/api/audio/getAudio/user123
+```
+
+### Get Specific Audio File
+```bash
+curl -X POST https://your-domain.pages.dev/api/audio/getAudioFile \
+  -H "Content-Type: application/json" \
+  -d '{"uid":"user123","audioid":"audio456"}'
+```
+
+## 🔧 Adding New Features
+
+### 1. Create New Route Module
+
+```javascript
+// src/routes/newFeatureRoutes.js
+import { Hono } from 'hono';
+import { getSupabaseClient } from '../config/database.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
+
+const newFeatureRoutes = new Hono();
+
+newFeatureRoutes.get('/endpoint', asyncHandler(async (c) => {
+  const supabase = getSupabaseClient(c.env);
+  // Your logic here
+  return c.json({ message: 'New feature' });
+}));
+
+export default newFeatureRoutes;
+```
+
+### 2. Register in Main App
+
+```javascript
+// src/app.js
+import newFeatureRoutes from './routes/newFeatureRoutes.js';
+
+app.route('/api/new-feature', newFeatureRoutes);
+```
+
+## 📊 Database Setup (Supabase)
+
+Create the `audio_metadata` table:
 
 ```sql
 CREATE TABLE audio_metadata (
@@ -119,44 +203,7 @@ CREATE TABLE audio_metadata (
 );
 ```
 
-## Usage
-
-### Example API Calls
-
-**Get audio file details:**
-```bash
-curl -X POST https://your-domain.pages.dev/api/getAudioFile \
-  -H "Content-Type: application/json" \
-  -d '{"uid":"user123","audioid":"audio456"}'
-```
-
-**Get all audio for a user:**
-```bash
-curl https://your-domain.pages.dev/api/getAudio/user123
-```
-
-**Health check:**
-```bash
-curl https://your-domain.pages.dev/api/health
-```
-
-## Project Structure
-
-```
-.
-├── functions/
-│   └── api/
-│       └── [[route]].js       # Main API handler
-├── .github/
-│   └── workflows/
-│       └── deploy.yml         # GitHub Actions workflow
-├── package.json               # Dependencies and scripts
-├── wrangler.toml             # Cloudflare configuration
-├── env.example               # Environment variables template
-└── README.md                 # This file
-```
-
-## Deployment
+## 🚀 Deployment
 
 The project automatically deploys to Cloudflare Pages when you:
 
@@ -164,26 +211,44 @@ The project automatically deploys to Cloudflare Pages when you:
 2. Push to the `develop` branch (preview deployment)
 3. Create a pull request to `main` (preview deployment)
 
-## Monitoring
+## 📈 Monitoring
 
 - **Logs**: Check Cloudflare Pages dashboard for function logs
 - **Analytics**: Available in Cloudflare Analytics
-- **Health**: Use the `/api/health` endpoint for monitoring
+- **Health**: Use the `/health` endpoint for monitoring
 
-## Troubleshooting
+## 🔍 Troubleshooting
 
-1. **Environment variables not working**: Ensure they're set in both Cloudflare Pages dashboard and wrangler.toml
-2. **CORS issues**: Update the CORS origins in the function to match your frontend domain
-3. **Build failures**: Check GitHub Actions logs and ensure all dependencies are correctly specified
+1. **Environment variables not working**: Ensure they're set in Cloudflare Pages dashboard
+2. **CORS issues**: Update the CORS origins in `src/app.js`
+3. **Build failures**: Check GitHub Actions logs
+4. **Route not found**: Verify the route is registered in `src/app.js`
 
-## Contributing
+## 📖 Documentation
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - Detailed architecture documentation
+- [API Documentation](https://your-domain.pages.dev/api) - Live API info endpoint
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
-4. Test locally with `npm run dev`
-5. Create a pull request
+3. Add your route module in `src/routes/`
+4. Register it in `src/app.js`
+5. Test locally with `npm run dev`
+6. Create a pull request
 
-## License
+## 📄 License
 
-MIT License 
+MIT License
+
+---
+
+## 🎯 Benefits of This Architecture
+
+✅ **Modular**: Easy to add new features without affecting existing code  
+✅ **Scalable**: Handle growing number of endpoints efficiently  
+✅ **Maintainable**: Clear separation of concerns  
+✅ **Testable**: Each module can be tested independently  
+✅ **Consistent**: Standardized error handling and validation  
+✅ **Developer-Friendly**: Clear structure for team development 
