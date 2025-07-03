@@ -1,4 +1,4 @@
 import app from '../../src/app.js';
 
-// Export the app for Cloudflare Pages Functions
-export default app; 
+// Cloudflare Pages Functions expects named exports for HTTP methods
+export const onRequest = app.fetch; 
