@@ -199,8 +199,26 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
       const durableObjectId = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.idFromName('transcription-processor');
       const durableObjectStub = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.get(durableObjectId);
       
+      // Get execution context for waitUntil
+      const executionCtx = c.executionCtx;
+      
       // Start background processing without waiting for response
-      c.waitUntil(
+      if (executionCtx && executionCtx.waitUntil) {
+        executionCtx.waitUntil(
+          durableObjectStub.fetch(new Request('https://dummy/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              uid,
+              audioid,
+              audioUrl,
+              language,
+              duration
+            })
+          }))
+        );
+      } else {
+        // Fallback: fire and forget (not ideal but works)
         durableObjectStub.fetch(new Request('https://dummy/process', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -211,8 +229,8 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
             language,
             duration
           })
-        }))
-      );
+        })).catch(error => console.error('Background transcription error:', error));
+      }
       
       console.log(`Audio transcription job started for audioid: ${audioid}`);
     } catch (error) {
