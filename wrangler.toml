@@ -5,6 +5,9 @@ compatibility_flags = ["nodejs_compat"]
 # Pages configuration
 pages_build_output_dir = "."
 
+# Local development environment variables are loaded from .dev.vars file
+# Production and preview environment variables should be set in Cloudflare dashboard
+
 [env.production.vars]
 ENVIRONMENT = "production"
 

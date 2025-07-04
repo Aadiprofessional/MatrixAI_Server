@@ -33,6 +33,8 @@ MatrixAI_Server/
 ## 🔗 API Endpoints
 
 ### Audio Management (`/api/audio/`)
+- `POST /api/audio/uploadAudioUrl` - Upload audio URL and get unique audioid
+- `POST /api/audio/getAudioStatus` - Get audio processing status and transcription
 - `POST /api/audio/getAudioFile` - Get audio file details by UID and audio ID
 - `GET /api/audio/getAudio/:uid` - Get all audio files for a user
 - `POST /api/audio/removeAudio` - Remove audio file and metadata
@@ -69,21 +71,21 @@ MatrixAI_Server/
    npm install
    ```
 
-3. **Configure environment variables:**
+3. **Configure environment variables for local development:**
    ```bash
-   cp env.example .env
+   cp .dev.vars.example .dev.vars
    ```
    
-   Edit `.env` with your Supabase credentials:
+   Edit `.dev.vars` with your Supabase credentials:
    ```
-   SUPABASE_URL=your_supabase_project_url
-   SUPABASE_ANON_KEY=your_supabase_anon_key
+   SUPABASE_URL=https://your-project-id.supabase.co
+   SUPABASE_ANON_KEY=your-supabase-anon-key
    ENVIRONMENT=development
    ```
 
 4. **Start local development:**
    ```bash
-   npm run dev
+   npx wrangler pages dev --port 8787
    ```
    
    Your API will be available at `http://localhost:8787`
@@ -138,6 +140,28 @@ curl https://your-domain.pages.dev/health
 ### API Information
 ```bash
 curl https://your-domain.pages.dev/api
+```
+
+### Upload Audio URL (New)
+```bash
+curl -X POST https://your-domain.pages.dev/api/audio/uploadAudioUrl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uid": "user123",
+    "audioUrl": "https://example.com/audio.mp3",
+    "audioName": "My Audio File",
+    "language": "en-GB"
+  }'
+```
+
+### Check Audio Status (New)
+```bash
+curl -X POST https://your-domain.pages.dev/api/audio/getAudioStatus \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uid": "user123",
+    "audioid": "audio_1234567890_abc123def"
+  }'
 ```
 
 ### Get Audio Files
@@ -199,8 +223,66 @@ CREATE TABLE audio_metadata (
   audio_url TEXT,
   language TEXT,
   words_data JSONB,
+  status TEXT DEFAULT 'pending',
+  error_message TEXT,
   PRIMARY KEY (uid, audioid)
 );
+
+-- Add indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_audio_metadata_status ON audio_metadata(status);
+CREATE INDEX IF NOT EXISTS idx_audio_metadata_uid_status ON audio_metadata(uid, status);
+```
+
+## 🚀 New Audio Processing Workflow
+
+The new audio processing system works as follows:
+
+1. **Upload Audio URL**: Client sends audio URL to `/api/audio/uploadAudioUrl`
+   - Returns unique `audioid` immediately
+   - Audio processing starts in background
+   - Status is set to 'pending'
+
+2. **Background Processing**:
+   - Validates user has sufficient coins
+   - Deducts coins based on audio duration (2 coins per minute)
+   - Transcribes audio using Deepgram API
+   - Updates status to 'processing' → 'completed' or 'failed'
+
+3. **Check Status**: Client polls `/api/audio/getAudioStatus` with `audioid`
+   - Returns current status and transcription when ready
+   - Possible statuses: `pending`, `processing`, `completed`, `failed`
+
+### Status Response Examples:
+
+**Pending:**
+```json
+{
+  "audioid": "audio_1234567890_abc123def",
+  "status": "pending",
+  "message": "Audio is queued for processing"
+}
+```
+
+**Completed:**
+```json
+{
+  "audioid": "audio_1234567890_abc123def",
+  "status": "completed",
+  "message": "Audio transcription completed",
+  "transcription": "Hello world, this is a test audio...",
+  "words_data": [...],
+  "duration": 120
+}
+```
+
+**Failed:**
+```json
+{
+  "audioid": "audio_1234567890_abc123def",
+  "status": "failed",
+  "message": "Audio transcription failed",
+  "error_message": "Insufficient coins. Please buy more coins."
+}
 ```
 
 ## 🚀 Deployment
@@ -219,10 +301,25 @@ The project automatically deploys to Cloudflare Pages when you:
 
 ## 🔍 Troubleshooting
 
-1. **Environment variables not working**: Ensure they're set in Cloudflare Pages dashboard
-2. **CORS issues**: Update the CORS origins in `src/app.js`
-3. **Build failures**: Check GitHub Actions logs
-4. **Route not found**: Verify the route is registered in `src/app.js`
+1. **Environment variables not working in local development**: 
+   - Ensure you have created `.dev.vars` file from `.dev.vars.example`
+   - Verify your Supabase credentials are correct
+   - Restart the development server after changing `.dev.vars`
+
+2. **Missing Supabase configuration error**: 
+   - Check that `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set in `.dev.vars` (local) or Cloudflare dashboard (production)
+   - Ensure environment variables don't have extra spaces or quotes
+
+3. **CORS issues**: Update the CORS origins in `src/app.js`
+
+4. **Build failures**: Check GitHub Actions logs
+
+5. **Route not found**: Verify the route is registered in `src/app.js`
+
+6. **Audio processing fails**: 
+   - Check if user has sufficient coins in the database
+   - Verify Deepgram API key is working
+   - Ensure audio URL is accessible publicly
 
 ## 📖 Documentation
 

@@ -1,0 +1,9 @@
+# Local development environment variables for Wrangler
+# Copy this file to .dev.vars and replace with your actual Supabase credentials
+# The .dev.vars file should not be committed to version control
+
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key-here
+ENVIRONMENT=development
+DEEPGRAM_API_URL=https://api.deepgram.com/v1/listen
+DEEPGRAM_API_KEY=your-deepgram-api-key-here 
