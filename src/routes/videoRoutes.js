@@ -233,14 +233,18 @@ const deductCoins = async (uid, requiredCoins, env) => {
 // Create video and start background processing
 videoRoutes.post('/createVideo', async (c) => {
   try {
-    const { uid, promptText, size } = await c.req.json();
+    const { uid, promptText, size, imageUrl, ratio, duration, videoStyle } = await c.req.json();
 
     if (!uid || !promptText) {
       return c.json({ error: 'UID and promptText are required' }, 400);
     }
 
-    // Set default size if not provided
+    // Set default values to match database schema
     const videoSize = size || "1280*720";
+    const videoRatio = ratio || null;
+    const videoDuration = duration || null;
+    const videoStyleValue = videoStyle || null;
+    const imageUrlValue = imageUrl || null;
 
     // Early validation of DashScope configuration
     if (!c.env.DASHSCOPEVIDEO_API_KEY) {
@@ -280,7 +284,11 @@ videoRoutes.post('/createVideo', async (c) => {
     // Generate file path based on uid and videoId
     const filePath = `${uid}/videos/${videoId}`;
 
-    // Create initial record with pending status
+    // Generate a temporary task_id to satisfy the NOT NULL constraint
+    // This will be replaced with the actual DashScope task_id during background processing
+    const tempTaskId = `temp_${videoId}_${Date.now()}`;
+
+    // Create initial record with pending status - include ALL required fields
     const { error: insertError } = await supabase
       .from('video_metadata')
       .insert([{
@@ -288,13 +296,24 @@ videoRoutes.post('/createVideo', async (c) => {
         uid,
         prompt_text: promptText,
         size: videoSize,
+        ratio: videoRatio,
+        duration: videoDuration,
+        video_style: videoStyleValue,
+        image_url: imageUrlValue,
+        task_id: tempTaskId, // Required field - will be updated with real task_id
         status: 'pending',
+        task_status: 'PENDING',
         created_at: new Date().toISOString(),
-        task_id: null,
-        task_status: null,
+        updated_at: new Date().toISOString(),
         request_id: null,
         video_url: null,
-        file_path: filePath
+        file_path: filePath,
+        submit_time: null,
+        scheduled_time: null,
+        end_time: null,
+        orig_prompt: null,
+        actual_prompt: null,
+        error_message: null
       }]);
 
     if (insertError) {
@@ -315,7 +334,10 @@ videoRoutes.post('/createVideo', async (c) => {
           // Update status to processing
           const { error: statusUpdateError } = await supabase
             .from('video_metadata')
-            .update({ status: 'processing' })
+            .update({ 
+              status: 'processing',
+              updated_at: new Date().toISOString()
+            })
             .eq('uid', uid)
             .eq('video_id', videoId);
 
@@ -338,14 +360,15 @@ videoRoutes.post('/createVideo', async (c) => {
 
           console.log(`Video generation initiated for videoId: ${videoId}, taskId: ${generationResult.task_id}`);
 
-          // Update with generation task details
+          // Update with generation task details - replace temp task_id with real one
           const { error: taskUpdateError } = await supabase
             .from('video_metadata')
             .update({ 
-              task_id: generationResult.task_id,
-              task_status: generationResult.task_status,
+              task_id: generationResult.task_id, // Replace temp task_id with real one
+              task_status: generationResult.task_status || 'PENDING',
               request_id: generationResult.request_id,
-              status: 'generating'
+              status: 'generating',
+              updated_at: new Date().toISOString()
             })
             .eq('uid', uid)
             .eq('video_id', videoId);
@@ -369,7 +392,10 @@ videoRoutes.post('/createVideo', async (c) => {
               // Update task status in database
               await supabase
                 .from('video_metadata')
-                .update({ task_status: statusResult.task_status })
+                .update({ 
+                  task_status: statusResult.task_status,
+                  updated_at: new Date().toISOString()
+                })
                 .eq('uid', uid)
                 .eq('video_id', videoId);
               
@@ -391,7 +417,8 @@ videoRoutes.post('/createVideo', async (c) => {
                       scheduled_time: statusResult.scheduled_time,
                       end_time: statusResult.end_time,
                       orig_prompt: statusResult.orig_prompt,
-                      actual_prompt: statusResult.actual_prompt
+                      actual_prompt: statusResult.actual_prompt,
+                      updated_at: new Date().toISOString()
                     })
                     .eq('uid', uid)
                     .eq('video_id', videoId);
@@ -419,7 +446,8 @@ videoRoutes.post('/createVideo', async (c) => {
                       end_time: statusResult.end_time,
                       orig_prompt: statusResult.orig_prompt,
                       actual_prompt: statusResult.actual_prompt,
-                      error_message: 'Video generated but not uploaded to storage'
+                      error_message: 'Video generated but not uploaded to storage',
+                      updated_at: new Date().toISOString()
                     })
                     .eq('uid', uid)
                     .eq('video_id', videoId);
@@ -450,7 +478,8 @@ videoRoutes.post('/createVideo', async (c) => {
               .from('video_metadata')
               .update({ 
                 status: 'failed',
-                error_message: error.message || 'Unknown error occurred during video generation'
+                error_message: error.message || 'Unknown error occurred during video generation',
+                updated_at: new Date().toISOString()
               })
               .eq('uid', uid)
               .eq('video_id', videoId);
@@ -480,7 +509,8 @@ videoRoutes.post('/createVideo', async (c) => {
         .from('video_metadata')
         .update({ 
           status: 'failed',
-          error_message: 'Failed to start video generation job'
+          error_message: 'Failed to start video generation job',
+          updated_at: new Date().toISOString()
         })
         .eq('uid', uid)
         .eq('video_id', videoId);
@@ -517,7 +547,25 @@ videoRoutes.post('/getVideoStatus', async (c) => {
     // Retrieve the video metadata from the database
     const { data: videoData, error: fetchError } = await supabase
       .from('video_metadata')
-      .select('video_id, prompt_text, size, task_id, task_status, status, video_url, created_at, error_message, submit_time, end_time')
+      .select(`
+        video_id, 
+        prompt_text, 
+        size, 
+        ratio,
+        duration,
+        video_style,
+        image_url,
+        task_id, 
+        task_status, 
+        status, 
+        video_url, 
+        created_at, 
+        updated_at,
+        error_message, 
+        submit_time, 
+        end_time,
+        request_id
+      `)
       .eq('uid', uid)
       .eq('video_id', videoId)
       .single();
@@ -537,8 +585,13 @@ videoRoutes.post('/getVideoStatus', async (c) => {
         videoId: videoData.video_id,
         prompt_text: videoData.prompt_text,
         size: videoData.size,
+        ratio: videoData.ratio,
+        duration: videoData.duration,
+        video_style: videoData.video_style,
+        image_url: videoData.image_url,
         status: 'completed',
         created_at: videoData.created_at,
+        updated_at: videoData.updated_at,
         message: 'Video generation completed successfully',
         video_url: videoData.video_url,
         task_id: videoData.task_id,
@@ -554,6 +607,7 @@ videoRoutes.post('/getVideoStatus', async (c) => {
         message: 'Video generation failed',
         error_message: videoData.error_message,
         created_at: videoData.created_at,
+        updated_at: videoData.updated_at,
         task_id: videoData.task_id
       });
       
@@ -565,6 +619,7 @@ videoRoutes.post('/getVideoStatus', async (c) => {
         task_status: videoData.task_status,
         message: 'Video is currently being generated',
         created_at: videoData.created_at,
+        updated_at: videoData.updated_at,
         task_id: videoData.task_id
       });
       
@@ -575,6 +630,7 @@ videoRoutes.post('/getVideoStatus', async (c) => {
         status: 'processing',
         message: 'Video generation task is being processed',
         created_at: videoData.created_at,
+        updated_at: videoData.updated_at,
         task_id: videoData.task_id
       });
       
@@ -584,7 +640,8 @@ videoRoutes.post('/getVideoStatus', async (c) => {
         prompt_text: videoData.prompt_text,
         status: 'pending',
         message: 'Video generation is queued for processing',
-        created_at: videoData.created_at
+        created_at: videoData.created_at,
+        updated_at: videoData.updated_at
       });
     }
     
@@ -685,6 +742,10 @@ videoRoutes.get('/getAllVideos/:uid', async (c) => {
         video_id,
         prompt_text,
         size,
+        ratio,
+        duration,
+        video_style,
+        image_url,
         task_id,
         task_status,
         request_id,
@@ -695,6 +756,7 @@ videoRoutes.get('/getAllVideos/:uid', async (c) => {
         orig_prompt,
         actual_prompt,
         created_at,
+        updated_at,
         status,
         error_message,
         file_path
@@ -757,6 +819,10 @@ videoRoutes.get('/getAllVideos/:uid', async (c) => {
         videoId: video.video_id,
         promptText: video.prompt_text,
         size: video.size,
+        ratio: video.ratio,
+        duration: video.duration,
+        videoStyle: video.video_style,
+        imageUrl: video.image_url,
         taskId: video.task_id,
         taskStatus: video.task_status,
         status: video.status,
@@ -765,6 +831,7 @@ videoRoutes.get('/getAllVideos/:uid', async (c) => {
         hasVideo: hasVideo,
         videoUrl: video.video_url,
         createdAt: video.created_at,
+        updatedAt: video.updated_at,
         ageDisplay: ageDisplay,
         requestId: video.request_id,
         submitTime: video.submit_time,
@@ -859,16 +926,27 @@ videoRoutes.post('/editVideo', async (c) => {
     // Update the video prompt in the database
     const { data, error } = await supabase
       .from('video_metadata')
-      .update({ prompt_text: updatedPrompt })
+      .update({ 
+        prompt_text: updatedPrompt,
+        updated_at: new Date().toISOString()
+      })
       .eq('uid', uid)
-      .eq('video_id', videoId);
+      .eq('video_id', videoId)
+      .select();
 
     if (error) {
       console.error('Error updating video prompt:', error);
       return c.json({ error: 'Failed to update video prompt' }, 500);
     }
 
-    return c.json({ message: 'Video prompt updated successfully', updatedVideo: data });
+    if (!data || data.length === 0) {
+      return c.json({ error: 'Video not found' }, 404);
+    }
+
+    return c.json({ 
+      message: 'Video prompt updated successfully', 
+      updatedVideo: data[0] 
+    });
   } catch (err) {
     console.error('Error processing request:', err);
     return c.json({ error: 'Internal server error' }, 500);
