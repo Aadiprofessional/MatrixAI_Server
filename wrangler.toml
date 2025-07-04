@@ -5,11 +5,27 @@ compatibility_flags = ["nodejs_compat"]
 # Pages configuration
 pages_build_output_dir = "."
 
+# Durable Object configuration for background audio transcription
+[[durable_objects.bindings]]
+name = "AUDIO_TRANSCRIPTION_PROCESSOR"
+class_name = "AudioTranscriptionProcessor"
+script_name = "matrixai-audio-processor"
+
 # Local development environment variables are loaded from .dev.vars file
 # Production and preview environment variables should be set in Cloudflare dashboard
 
 [env.production.vars]
 ENVIRONMENT = "production"
 
+[[env.production.durable_objects.bindings]]
+name = "AUDIO_TRANSCRIPTION_PROCESSOR"
+class_name = "AudioTranscriptionProcessor"
+script_name = "matrixai-audio-processor"
+
 [env.preview.vars]
-ENVIRONMENT = "preview" 
+ENVIRONMENT = "preview"
+
+[[env.preview.durable_objects.bindings]]
+name = "AUDIO_TRANSCRIPTION_PROCESSOR"
+class_name = "AudioTranscriptionProcessor"
+script_name = "matrixai-audio-processor" 

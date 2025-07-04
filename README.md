@@ -150,7 +150,8 @@ curl -X POST https://your-domain.pages.dev/api/audio/uploadAudioUrl \
     "uid": "user123",
     "audioUrl": "https://example.com/audio.mp3",
     "audioName": "My Audio File",
-    "language": "en-GB"
+    "language": "en-GB",
+    "duration": 120
   }'
 ```
 

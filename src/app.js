@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import audioRoutes from './routes/audioRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import { AudioTranscriptionProcessor } from './durableObjects/AudioTranscriptionProcessor.js';
 
 const app = new Hono();
 
@@ -51,5 +52,8 @@ app.notFound((c) => {
     availableEndpoints: ['/health', '/api', '/api/audio/*', '/api/user/*', '/api/admin/*']
   }, 404);
 });
+
+// Export Durable Object for background processing
+export { AudioTranscriptionProcessor };
 
 export default app; 

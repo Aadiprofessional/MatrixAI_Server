@@ -62,10 +62,9 @@ const transcribeAudioWithDeepgram = async (audioUrl, language = "en-GB", env) =>
   }
 };
 
-// Check user coins and deduct if sufficient
-const checkAndDeductCoins = async (supabase, uid, requiredCoins) => {
+// Check if user has sufficient coins (without deducting)
+const checkUserCoins = async (supabase, uid, requiredCoins) => {
   try {
-    // Check if user has enough coins
     const { data: userData, error: userError } = await supabase
       .from("users")
       .select("user_coins")
@@ -82,11 +81,16 @@ const checkAndDeductCoins = async (supabase, uid, requiredCoins) => {
       throw new Error("Insufficient coins. Please buy more coins.");
     }
 
-    // Get current timestamp in Hong Kong timezone
-    const hongKongTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Hong_Kong" });
+    return { success: true, userCoins };
+  } catch (error) {
+    throw error;
+  }
+};
 
-    // Deduct coins using the external API
-    const coinDeductionResponse = await fetch("https://matrix-server.vercel.app/subtractCoins", {
+// Deduct coins from user account
+const deductCoins = async (uid, requiredCoins, env) => {
+  try {
+    const coinDeductionResponse = await fetch(`${env.BASE_URL || 'http://localhost:8787'}/api/user/subtractCoins`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -94,15 +98,19 @@ const checkAndDeductCoins = async (supabase, uid, requiredCoins) => {
       body: JSON.stringify({
         uid: uid,
         coinAmount: requiredCoins,
-        transaction_name: "Audio Transcription",
-        transaction_time: hongKongTime
+        transaction_name: "Audio Transcription"
       }),
     });
 
+    if (!coinDeductionResponse.ok) {
+      const errorText = await coinDeductionResponse.text();
+      throw new Error(`Failed to deduct coins: ${errorText}`);
+    }
+
     const coinDeductionResult = await coinDeductionResponse.json();
     
-    if (!coinDeductionResponse.ok || !coinDeductionResult.success) {
-      throw new Error("Failed to deduct coins");
+    if (!coinDeductionResult.success) {
+      throw new Error(coinDeductionResult.message || "Failed to deduct coins");
     }
 
     return { success: true };
@@ -111,69 +119,17 @@ const checkAndDeductCoins = async (supabase, uid, requiredCoins) => {
   }
 };
 
-// Process audio transcription in background
-const processAudioTranscription = async (supabase, uid, audioid, audioUrl, language, env) => {
-  try {
-    // Get audio duration (placeholder implementation)
-    const duration = await getAudioDuration(audioUrl);
-    
-    // Calculate required coins: 2 coins per minute of audio
-    const requiredCoins = Math.ceil(duration * 2);
-
-    // Check and deduct coins
-    await checkAndDeductCoins(supabase, uid, requiredCoins);
-
-    // Update status to processing
-    await supabase
-      .from('audio_metadata')
-      .update({ 
-        status: 'processing',
-        duration: duration 
-      })
-      .eq('uid', uid)
-      .eq('audioid', audioid);
-
-    // Transcribe the audio using Deepgram
-    const transcriptionResult = await transcribeAudioWithDeepgram(audioUrl, language, env);
-
-    if (!transcriptionResult.transcription) {
-      throw new Error("Failed to transcribe audio");
-    }
-
-    // Update with transcription results
-    await supabase
-      .from('audio_metadata')
-      .update({ 
-        transcription: transcriptionResult.transcription,
-        words_data: transcriptionResult.jsonResponse,
-        status: 'completed'
-      })
-      .eq('uid', uid)
-      .eq('audioid', audioid);
-
-    console.log(`Audio transcription completed for ${audioid}`);
-  } catch (error) {
-    console.error(`Error processing audio ${audioid}:`, error);
-    
-    // Update status to failed
-    await supabase
-      .from('audio_metadata')
-      .update({ 
-        status: 'failed',
-        error_message: error.message
-      })
-      .eq('uid', uid)
-      .eq('audioid', audioid);
-  }
-};
-
-// Upload audio URL and get unique audioid
+// Upload audio URL and start background transcription using Durable Objects
 audioRoutes.post('/uploadAudioUrl', async (c) => {
   try {
-    const { uid, audioUrl, audioName, language = "en-GB" } = await c.req.json();
+    const { uid, audioUrl, audioName, language = "en-GB", duration } = await c.req.json();
 
     if (!uid || !audioUrl) {
       return c.json({ error: 'UID and audioUrl are required' }, 400);
+    }
+
+    if (!duration || duration <= 0) {
+      return c.json({ error: 'Duration is required and must be greater than 0' }, 400);
     }
 
     // Validate audio URL format
@@ -189,6 +145,25 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
     }
 
     const supabase = getSupabaseClient(c.env);
+
+    // Calculate required coins with new logic:
+    // - Minimum 2 coins for audio less than 1 minute
+    // - 2 coins per minute, rounded up to whole numbers for longer audio
+    const requiredCoins = Math.max(2, Math.ceil(duration * 2));
+
+    // Check if user has sufficient coins BEFORE creating the record
+    try {
+      await checkUserCoins(supabase, uid, requiredCoins);
+    } catch (error) {
+      return c.json({ error: error.message }, 400);
+    }
+
+    // Deduct coins upfront
+    try {
+      await deductCoins(uid, requiredCoins, c.env);
+    } catch (error) {
+      return c.json({ error: error.message }, 400);
+    }
 
     // Generate unique audio ID
     const audioid = generateAudioId();
@@ -209,7 +184,7 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
         uploaded_at: new Date().toISOString(),
         transcription: null,
         words_data: null,
-        duration: null,
+        duration: duration,
         file_path: filePath
       }]);
 
@@ -218,20 +193,54 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
       return c.json({ error: 'Failed to create audio record' }, 500);
     }
 
-    // Start background processing (don't await this)
-    processAudioTranscription(supabase, uid, audioid, audioUrl, language, c.env)
-      .catch(error => {
-        console.error('Background processing error:', error);
-      });
+    // Start background transcription using Durable Object
+    try {
+      // Get or create the transcription processor Durable Object
+      const durableObjectId = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.idFromName('transcription-processor');
+      const durableObjectStub = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.get(durableObjectId);
+      
+      // Start background processing without waiting for response
+      c.waitUntil(
+        durableObjectStub.fetch(new Request('https://dummy/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uid,
+            audioid,
+            audioUrl,
+            language,
+            duration
+          })
+        }))
+      );
+      
+      console.log(`Audio transcription job started for audioid: ${audioid}`);
+    } catch (error) {
+      console.error('Error starting transcription job:', error);
+      // If background job fails to start, update status to failed
+      await supabase
+        .from('audio_metadata')
+        .update({ 
+          status: 'failed',
+          error_message: 'Failed to start transcription job'
+        })
+        .eq('uid', uid)
+        .eq('audioid', audioid);
+      
+      return c.json({ error: 'Failed to start transcription job' }, 500);
+    }
 
+    // Return immediately with audioid - transcription happens in background
     return c.json({ 
       success: true,
       audioid: audioid,
       status: 'pending',
-      message: 'Audio upload initiated. Use the audioid to check status.'
+      message: 'Audio upload successful. Transcription is being processed in the background.',
+      required_coins: requiredCoins
     });
+    
   } catch (err) {
-    console.error('Error processing request:', err);
+    console.error('Error in uploadAudioUrl:', err);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -247,7 +256,7 @@ audioRoutes.post('/getAudioStatus', async (c) => {
 
     const supabase = getSupabaseClient(c.env);
 
-    // Query the database for audio metadata
+    // Retrieve the audio metadata from the database
     const { data: audioData, error: fetchError } = await supabase
       .from('audio_metadata')
       .select('audioid, audio_name, audio_url, language, status, transcription, words_data, duration, uploaded_at, error_message')
@@ -264,45 +273,63 @@ audioRoutes.post('/getAudioStatus', async (c) => {
       return c.json({ error: 'Audio not found' }, 404);
     }
 
-    // Return different responses based on status
-    const response = {
-      audioid: audioData.audioid,
-      audio_name: audioData.audio_name,
-      audio_url: audioData.audio_url,
-      language: audioData.language,
-      status: audioData.status,
-      uploaded_at: audioData.uploaded_at,
-      duration: audioData.duration
-    };
-
-    switch (audioData.status) {
-      case 'pending':
-        response.message = 'Audio is queued for processing';
-        break;
-      case 'processing':
-        response.message = 'Audio is currently being transcribed';
-        break;
-      case 'completed':
-        response.message = 'Audio transcription completed';
-        response.transcription = audioData.transcription;
-        response.words_data = audioData.words_data;
-        break;
-      case 'failed':
-        response.message = 'Audio transcription failed';
-        response.error_message = audioData.error_message;
-        break;
-      default:
-        response.message = 'Unknown status';
+    // Return status based on current state
+    if (audioData.status === 'completed' && audioData.transcription) {
+      const words = audioData.transcription.split(' ');
+      const preview = words.slice(0, 15).join(' ');
+      
+      return c.json({
+        audioid: audioData.audioid,
+        audio_name: audioData.audio_name,
+        audio_url: audioData.audio_url,
+        language: audioData.language,
+        status: 'completed',
+        uploaded_at: audioData.uploaded_at,
+        duration: audioData.duration,
+        message: 'Audio transcription completed successfully',
+        transcription_preview: preview + (words.length > 15 ? '...' : ''),
+        word_count: words.length
+      });
+      
+    } else if (audioData.status === 'failed') {
+      return c.json({
+        audioid: audioData.audioid,
+        audio_name: audioData.audio_name,
+        status: 'failed',
+        message: 'Audio transcription failed',
+        error_message: audioData.error_message,
+        uploaded_at: audioData.uploaded_at,
+        duration: audioData.duration
+      });
+      
+    } else if (audioData.status === 'processing') {
+      return c.json({
+        audioid: audioData.audioid,
+        audio_name: audioData.audio_name,
+        status: 'processing',
+        message: 'Audio transcription is currently being processed',
+        uploaded_at: audioData.uploaded_at,
+        duration: audioData.duration
+      });
+      
+    } else {
+      return c.json({
+        audioid: audioData.audioid,
+        audio_name: audioData.audio_name,
+        status: 'pending',
+        message: 'Audio transcription is queued for processing',
+        uploaded_at: audioData.uploaded_at,
+        duration: audioData.duration
+      });
     }
-
-    return c.json(response);
+    
   } catch (err) {
-    console.error('Error processing request:', err);
+    console.error('Error in getAudioStatus:', err);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
-// Get audio file details by UID and audio ID
+// Get full audio file details by UID and audio ID
 audioRoutes.post('/getAudioFile', async (c) => {
   try {
     const { uid, audioid } = await c.req.json();
@@ -316,22 +343,54 @@ audioRoutes.post('/getAudioFile', async (c) => {
     // Query the database for audio metadata by UID and Audio ID
     const { data: audioMetadata, error: metadataError } = await supabase
       .from('audio_metadata')
-      .select('audioid, audio_name, duration, uploaded_at, transcription, xml_data, file_path, audio_url, language, words_data')
+      .select('audioid, audio_name, duration, uploaded_at, transcription, xml_data, file_path, audio_url, language, words_data, status, error_message')
       .eq('uid', uid)
-      .eq('audioid', audioid);
+      .eq('audioid', audioid)
+      .single();
 
     if (metadataError) {
       console.error('Error retrieving audio metadata:', metadataError);
       return c.json({ error: 'Failed to retrieve audio metadata' }, 500);
     }
 
-    if (!audioMetadata || audioMetadata.length === 0) {
+    if (!audioMetadata) {
       return c.json({ error: 'No audio data found for the given UID and Audio ID' }, 404);
     }
 
-    return c.json(audioMetadata[0]);
+    // Prepare base response
+    const response = {
+      audioid: audioMetadata.audioid,
+      audio_name: audioMetadata.audio_name,
+      audio_url: audioMetadata.audio_url,
+      language: audioMetadata.language,
+      duration: audioMetadata.duration,
+      uploaded_at: audioMetadata.uploaded_at,
+      status: audioMetadata.status,
+      file_path: audioMetadata.file_path,
+      xml_data: audioMetadata.xml_data
+    };
+
+    // Handle response based on status
+    if (audioMetadata.status === 'completed' && audioMetadata.transcription) {
+      response.transcription = audioMetadata.transcription;
+      response.words_data = audioMetadata.words_data;
+      response.message = 'Full transcription available';
+      
+    } else if (audioMetadata.status === 'failed') {
+      response.error_message = audioMetadata.error_message;
+      response.message = 'Transcription failed';
+      
+    } else if (audioMetadata.status === 'processing') {
+      response.message = 'Transcription in progress';
+      
+    } else {
+      response.message = 'Transcription pending';
+    }
+
+    return c.json(response);
+    
   } catch (err) {
-    console.error('Error processing request:', err);
+    console.error('Error in getAudioFile:', err);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -350,7 +409,7 @@ audioRoutes.get('/getAudio/:uid', async (c) => {
     // Query the database for audio metadata by UID
     const { data, error } = await supabase
       .from('audio_metadata')
-      .select('audioid, duration, uploaded_at, audio_name, audio_url, language')
+      .select('audioid, duration, uploaded_at, audio_name, audio_url, language, status')
       .eq('uid', uid);
 
     if (error) {
