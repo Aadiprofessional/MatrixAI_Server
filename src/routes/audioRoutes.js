@@ -26,6 +26,16 @@ const transcribeAudioWithDeepgram = async (audioUrl, language = "en-GB", env) =>
     const DEEPGRAM_API_URL = env.DEEPGRAM_API_URL;
     const DEEPGRAM_API_KEY = env.DEEPGRAM_API_KEY;
 
+    if (!DEEPGRAM_API_URL || !DEEPGRAM_API_KEY) {
+      throw new Error('Deepgram API configuration missing. Please check DEEPGRAM_API_URL and DEEPGRAM_API_KEY environment variables.');
+    }
+
+    console.log(`Starting Deepgram transcription for URL: ${audioUrl}, Language: ${language}`);
+
+    // Add timeout for Deepgram API call (30 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     const response = await fetch(`${DEEPGRAM_API_URL}?smart_format=true&language=${language}&model=whisper`, {
       method: "POST",
       headers: {
@@ -35,16 +45,19 @@ const transcribeAudioWithDeepgram = async (audioUrl, language = "en-GB", env) =>
       body: JSON.stringify({
         url: audioUrl,
       }),
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Deepgram API error:", errorText);
-      throw new Error(`Deepgram API error: ${response.status} ${response.statusText}`);
+      console.error("Deepgram API error:", response.status, response.statusText, errorText);
+      throw new Error(`Deepgram API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     const data = await response.json();
-    console.log("Deepgram API response:", JSON.stringify(data));
+    console.log("Deepgram API response received, processing...");
 
     // Extract the transcript from the Deepgram response
     const transcript = data.results?.channels[0]?.alternatives[0]?.transcript || "";
@@ -52,13 +65,19 @@ const transcribeAudioWithDeepgram = async (audioUrl, language = "en-GB", env) =>
     // Extract word-level data with timestamps
     const words = data.results?.channels[0]?.alternatives[0]?.words || [];
     
+    console.log(`Transcription extracted: ${transcript.length} characters, ${words.length} words`);
+    
     return {
       transcription: transcript,
       jsonResponse: words,
     };
   } catch (error) {
-    console.error("Error transcribing audio:", error);
-    return { transcription: "", jsonResponse: null };
+    if (error.name === 'AbortError') {
+      console.error("Deepgram API timeout after 30 seconds");
+      throw new Error("Transcription timeout - audio file may be too large or Deepgram service is slow");
+    }
+    console.error("Error transcribing audio:", error.message || error);
+    throw error; // Re-throw the error instead of returning empty result
   }
 };
 
@@ -132,6 +151,12 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
       return c.json({ error: 'Duration is required and must be greater than 0' }, 400);
     }
 
+    // Early validation of Deepgram configuration
+    if (!c.env.DEEPGRAM_API_URL || !c.env.DEEPGRAM_API_KEY) {
+      console.error('Missing Deepgram configuration');
+      return c.json({ error: 'Audio transcription service is not properly configured' }, 500);
+    }
+
     // Validate audio URL format
     try {
       new URL(audioUrl);
@@ -143,6 +168,8 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
     if (audioUrl.length > 255) {
       return c.json({ error: 'Audio URL is too long (maximum 255 characters)' }, 400);
     }
+
+    console.log(`Processing audio upload request: uid=${uid}, duration=${duration}, language=${language}`);
 
     const supabase = getSupabaseClient(c.env);
 
@@ -204,15 +231,22 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
           console.log(`Starting background transcription for audioid: ${audioid}`);
           
           // Update status to processing
-          await supabase
+          const { error: statusUpdateError } = await supabase
             .from('audio_metadata')
             .update({ status: 'processing' })
             .eq('uid', uid)
             .eq('audioid', audioid);
 
+          if (statusUpdateError) {
+            console.error('Error updating status to processing:', statusUpdateError);
+            throw new Error('Failed to update processing status');
+          }
+
           // Add a small delay to ensure the upload response is sent first
           await new Promise(resolve => setTimeout(resolve, 100));
 
+          console.log(`Calling Deepgram API for audioid: ${audioid}`);
+          
           // Transcribe the audio using Deepgram
           const transcriptionResult = await transcribeAudioWithDeepgram(audioUrl, language, c.env);
 
@@ -241,17 +275,25 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
           console.log(`Successfully completed transcription for audioid: ${audioid}`);
           
         } catch (error) {
-          console.error(`Error in background transcription:`, error);
+          console.error(`Error in background transcription for audioid: ${audioid}:`, error.message || error);
           
           // Update status to failed
-          await supabase
-            .from('audio_metadata')
-            .update({ 
-              status: 'failed',
-              error_message: error.message
-            })
-            .eq('uid', uid)
-            .eq('audioid', audioid);
+          try {
+            const { error: failedUpdateError } = await supabase
+              .from('audio_metadata')
+              .update({ 
+                status: 'failed',
+                error_message: error.message || 'Unknown error occurred during transcription'
+              })
+              .eq('uid', uid)
+              .eq('audioid', audioid);
+
+            if (failedUpdateError) {
+              console.error('Error updating failed status:', failedUpdateError);
+            }
+          } catch (updateError) {
+            console.error('Critical error: Could not update failure status:', updateError);
+          }
         }
       };
       
