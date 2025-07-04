@@ -119,7 +119,7 @@ const deductCoins = async (uid, requiredCoins, env) => {
   }
 };
 
-// Upload audio URL and start background transcription using Durable Objects
+// Upload audio URL and start background transcription using direct background processing
 audioRoutes.post('/uploadAudioUrl', async (c) => {
   try {
     const { uid, audioUrl, audioName, language = "en-GB", duration } = await c.req.json();
@@ -193,43 +193,74 @@ audioRoutes.post('/uploadAudioUrl', async (c) => {
       return c.json({ error: 'Failed to create audio record' }, 500);
     }
 
-    // Start background transcription using Durable Object
+    // Start background transcription using direct background processing
     try {
-      // Get or create the transcription processor Durable Object
-      const durableObjectId = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.idFromName('transcription-processor');
-      const durableObjectStub = c.env.AUDIO_TRANSCRIPTION_PROCESSOR.get(durableObjectId);
-      
       // Get execution context for waitUntil
       const executionCtx = c.executionCtx;
       
-      // Start background processing without waiting for response
-      if (executionCtx && executionCtx.waitUntil) {
-        executionCtx.waitUntil(
-          durableObjectStub.fetch(new Request('https://dummy/process', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              uid,
-              audioid,
-              audioUrl,
-              language,
-              duration
+      // Create background processing function
+      const processTranscription = async () => {
+        try {
+          console.log(`Starting background transcription for audioid: ${audioid}`);
+          
+          // Update status to processing
+          await supabase
+            .from('audio_metadata')
+            .update({ status: 'processing' })
+            .eq('uid', uid)
+            .eq('audioid', audioid);
+
+          // Add a small delay to ensure the upload response is sent first
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // Transcribe the audio using Deepgram
+          const transcriptionResult = await transcribeAudioWithDeepgram(audioUrl, language, c.env);
+
+          if (!transcriptionResult.transcription) {
+            throw new Error("Failed to transcribe audio - empty transcription returned");
+          }
+
+          console.log(`Transcription completed for audioid: ${audioid}, length: ${transcriptionResult.transcription.length}`);
+
+          // Update with transcription results
+          const { error: transcriptionUpdateError } = await supabase
+            .from('audio_metadata')
+            .update({ 
+              transcription: transcriptionResult.transcription,
+              words_data: transcriptionResult.jsonResponse,
+              status: 'completed'
             })
-          }))
-        );
+            .eq('uid', uid)
+            .eq('audioid', audioid);
+
+          if (transcriptionUpdateError) {
+            console.error('Error updating transcription results:', transcriptionUpdateError);
+            throw new Error('Failed to save transcription results');
+          }
+
+          console.log(`Successfully completed transcription for audioid: ${audioid}`);
+          
+        } catch (error) {
+          console.error(`Error in background transcription:`, error);
+          
+          // Update status to failed
+          await supabase
+            .from('audio_metadata')
+            .update({ 
+              status: 'failed',
+              error_message: error.message
+            })
+            .eq('uid', uid)
+            .eq('audioid', audioid);
+        }
+      };
+      
+      // Start background processing
+      if (executionCtx && executionCtx.waitUntil) {
+        executionCtx.waitUntil(processTranscription());
       } else {
-        // Fallback: fire and forget (not ideal but works)
-        durableObjectStub.fetch(new Request('https://dummy/process', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uid,
-            audioid,
-            audioUrl,
-            language,
-            duration
-          })
-        })).catch(error => console.error('Background transcription error:', error));
+        // Fallback: fire and forget
+        processTranscription().catch(error => console.error('Background transcription error:', error));
       }
       
       console.log(`Audio transcription job started for audioid: ${audioid}`);
